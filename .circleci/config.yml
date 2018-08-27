@@ -39,7 +39,12 @@ jobs:
             pyver="~/.pyenv/versions"
             echo "DEBUG::$pyver: $(ls $pyver)"
             echo "$HOME"
+            echo "ls -a $HOME:"
             ls -a "$HOME"
+            echo "ls -a $HOME/.pyenv:"
+            ls -a "$HOME/.pyenv"
+            echo "ls -a ~:"
+            ls -a ~
             python_versions=$(cat .circleci/python-versions.txt)
             echo "Python versions to install: $python_versions"
             for python_version in $python_versions; do
