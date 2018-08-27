@@ -65,7 +65,7 @@ jobs:
           name: Save PyEnv Cache
           key: v1-pyenv-cache-{{ checksum ".circleci/python-versions.txt"}}
           paths:
-              - ".pyenv"
+              - "~/.pyenv"
 
       - run:
           name: Run Integration tests
