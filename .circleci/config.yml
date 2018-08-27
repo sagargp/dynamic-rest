@@ -45,6 +45,14 @@ jobs:
             ls -a "$HOME/.pyenv"
             echo "ls -a ~:"
             ls -a ~
+            echo "ls -a ~/.pyenv:"
+            ls -a ~/.pyenv
+            echo "ls ~/.pyenv/versions"
+            ls  ~/.pyenv/versions
+            echo "ls $HOME/.pyenv/versions"
+            ls  "$HOME/.pyenv/versions"
+            echo "ls -a $HOME/dynamic-rest/.pyenv"
+            ls -a "$HOME/dynamic-rest/.pyenv"
             python_versions=$(cat .circleci/python-versions.txt)
             echo "Python versions to install: $python_versions"
             for python_version in $python_versions; do
