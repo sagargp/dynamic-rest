@@ -32,6 +32,7 @@ jobs:
           command: |
             pyenv versions
             python_versions=$(cat .circleci/python-versions.txt)
+            echo "Python versions to install: $python_versions"
             for python_version in "$python_versions"; do
                 echo "INSTALLING: Python $python_version"
                 pyenv install -s "$python_version"
