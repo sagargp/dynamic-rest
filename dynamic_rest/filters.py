@@ -1,7 +1,12 @@
 """This module contains custom filter backends."""
+
+import uuid
+import json
 from django.core.exceptions import ValidationError as InternalValidationError
 from django.core.exceptions import ImproperlyConfigured
-from django.db.models import Q, Prefetch, Manager
+from django.db.models import Q, Prefetch, Manager, TextField
+from django.contrib.postgres.fields.jsonb import KeyTextTransform
+from django.db.models.functions import Cast
 from django.db.models.expressions import RawSQL, OrderBy
 from django.utils import six
 from rest_framework import serializers
@@ -59,6 +64,7 @@ class FilterNode(object):
                 Per Django convention, `None` means the equality operator.
             value: The value to filter on.
         """
+
         self.field = field
         self.operator = operator
         self.value = value
@@ -282,7 +288,7 @@ class DynamicFilterBackend(BaseFilterBackend):
 
         return out
 
-    def _filters_to_query(self, includes, excludes, serializer, q=None):
+    def _filters_to_query(self, includes, excludes, serializer, queryset, q=None):
         """
         Construct Django Query object from request.
         Arguments are dictionaries, which will be passed to Q() as kwargs.
@@ -302,37 +308,43 @@ class DynamicFilterBackend(BaseFilterBackend):
           Tuple of:
               * Q() instance or None if no inclusion or exclusion filters
                 were specified.
-              * dictionary of {(field,): (operator, value)} for any json fields
+              * dictionary of {field_name: value} for any json fields
         """
-        def rewrite_filters(filters, serializer):
+        def rewrite_filters(filters, serializer, queryset):
             out = {}
-            json_out = {}
             for k, node in six.iteritems(filters):
                 filter_key, field = node.generate_query_key(serializer)
                 if isinstance(field, (BooleanField, NullBooleanField)):
                     node.value = is_truthy(node.value)
 
                 if isinstance(field, JSONField):
-                    json_out[tuple(node.field)] = (node.operator, node.value)
+                    fields = filter_key.split('__')
+                    if node.operator:
+                        fields = fields[:-1]
+
+                    annotation_lhs = uuid.uuid4().hex
+                    filter_lhs = (annotation_lhs + '__' + node.operator) if node.operator else annotation_lhs
+
+                    queryset = queryset.annotate(
+                        **{annotation_lhs: KeyTextTransform(fields[-1], '__'.join(fields[0:-1]))}
+                    ).filter(**{filter_lhs: node.value})
                 else:
                     out[filter_key] = node.value
-            return out, json_out
+            return out, queryset
 
         q = q or Q()
 
-        json_extras = None
-
         if not includes and not excludes:
-            return None, None
+            return None, queryset
 
         if includes:
-            includes, json_extras = rewrite_filters(includes, serializer)
+            includes, queryset = rewrite_filters(includes, serializer, queryset=queryset)
             q &= Q(**includes)
         if excludes:
-            excludes, json_extras = rewrite_filters(excludes, serializer)
+            excludes, queryset = rewrite_filters(excludes, serializer, queryset=queryset)
             for k, v in six.iteritems(excludes):
                 q &= ~Q(**{k: v})
-        return q, json_extras
+        return q, queryset
 
     def _create_prefetch(self, source, queryset):
         return Prefetch(source, queryset=queryset)
@@ -566,48 +578,23 @@ class DynamicFilterBackend(BaseFilterBackend):
             queryset = queryset.only(*only)
 
         # add request filters
-        query, json_extras = self._filters_to_query(
+        query, queryset = self._filters_to_query(
             includes=filters.get('_include'),
             excludes=filters.get('_exclude'),
-            serializer=serializer
+            serializer=serializer,
+            queryset=queryset
         )
 
         # add additional filters specified by calling view
         if extra_filters:
             query = extra_filters if not query else extra_filters & query
 
-        if query or json_extras:
+        if query: # or json_extras:
             # Convert internal django ValidationError to
             # APIException-based one in order to resolve validation error
             # from 500 status code to 400.
             try:
                 queryset = queryset.filter(query)
-
-                if json_extras:
-                    extra_queries = []
-                    for json_field_names, (operator, value) in six.iteritems(json_extras):
-                        if not operator:
-                            query_operator = '='
-                            value = "'{}'".format(value)
-                        elif operator in ('startswith', 'istartswith'):
-                            query_operator = 'ILIKE' if operator[0] == 'i' else 'LIKE'
-                            value = "'{}%%'".format(value)
-                        elif operator in ('endswith', 'iendswith'):
-                            query_operator = 'ILIKE' if operator[0] == 'i' else 'LIKE'
-                            value = "'%%{}'".format(value)
-                        elif operator in ('contains', 'icontains'):
-                            query_operator = 'ILIKE' if operator[0] == 'i' else 'LIKE'
-                            value = "'%%{}%%'".format(value)
-                        else:
-                            raise InternalValidationError('Unsupported filter operation for nested JSON fields: {}'.format(operator))
-
-                        extra_query = []
-                        extra_query.append(json_field_names[0] + '->>')
-                        extra_query.append('->>'.join(["'{}'".format(k) for k in json_field_names[1:]]))
-                        extra_query.append(query_operator)
-                        extra_query.append(value)
-                        extra_queries.append(' '.join(extra_query))
-                    queryset = queryset.extra(where=extra_queries)
             except InternalValidationError as e:
                 raise ValidationError(
                     dict(e) if hasattr(e, 'error_dict') else list(e)
